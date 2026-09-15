@@ -161,19 +161,28 @@ async function main() {
     groups[parentPath].push(k);
   });
 
-  const allClientFiles = getAllFiles(config.projectRoot);
   const sourceFiles = [];
   const testFiles = [];
 
+  // 1. Scan Front-end
+  const allClientFiles = getAllFiles(config.projectRoot);
   allClientFiles.forEach(file => {
     const isTestFile = config.testFilePatterns && config.testFilePatterns.some(pattern => file.includes(pattern));
     if (isTestFile) testFiles.push(file);
     else sourceFiles.push(file);
   });
 
+  // 2. Scan E2E (ajouté aux tests)
   if (config.e2eRoot && fs.existsSync(config.e2eRoot)) {
     const e2eFiles = getAllFiles(config.e2eRoot);
     testFiles.push(...e2eFiles);
+  }
+
+  // 3. Scan Backend (ajouté aux sources)
+  if (config.backendRoot && fs.existsSync(config.backendRoot)) {
+    const backendFiles = getAllFiles(config.backendRoot);
+    sourceFiles.push(...backendFiles);
+    console.log(`📌 ${backendFiles.length} fichiers Backend détectés.`);
   }
 
   let totalCodeFilesUpdated = 0;
@@ -200,7 +209,7 @@ async function main() {
     let finalReplacements = groupReplacements;
 
     if (!isAutoMode) {
-      const answer = await askQuestion("\nAction : [Entrée] Valider tout | [s] Ignorer | [m] Modifier | [a] Mode auto | [q] Mode auto : ");
+      const answer = await askQuestion("\nAction : [Entrée] Valider tout | [s] Ignorer | [m] Modifier | [a] Mode auto | [q] Quitter : ");
       choice = answer.trim().toLowerCase();
 
       if (choice === 'a') {
@@ -210,6 +219,14 @@ async function main() {
       }
     } else {
       console.log("🤖 Validation automatique du groupe...");
+    }
+
+    if (choice === 'q') {
+      console.log("🛑 Arrêt prématuré du programme. Génération du rapport en cours...");
+      keys.forEach(k => {
+        fullReport[parentPath].ignored.push({ key: k.path, reason: "Arrêt du script en cours de traitement." });
+      });
+      break;
     }
 
     if (choice === 's') {
@@ -226,15 +243,6 @@ async function main() {
         const ans = await askQuestion(`  Prop: ${item.newKey}\n  [Entrée] accepter, ou taper le nouveau nom : `);
         finalReplacements.push({ oldKey: item.oldKey, newKey: ans.trim() !== '' ? ans.trim() : item.newKey });
       }
-    }
-
-    if (choice === 'q') {
-      console.log("🛑 Arrêt prématuré du programme. Génération du rapport en cours avec les données traitées...");
-
-      keys.forEach(k => {
-        fullReport[parentPath].ignored.push({ key: k.path, reason: "Arrêt du script en cours de traitement." });
-      });
-      break;
     }
 
     console.log("⏳ Vérification conditionnelle (Source vs Tests vs Dynamique)...");
@@ -268,6 +276,7 @@ async function main() {
         }
       }
 
+      // RECHERCHE DYNAMIQUE (Si la clé exacte n'a pas été trouvée)
       if (config.detectDynamicUsage && sourceFilesFound.length === 0 && !inQuarantined) {
         const dynamicParent = oldKey.split('.').slice(0, -1).join('.') + '.';
         const dynamicRegex = new RegExp(`(?<![\\w.])${dynamicParent.replace(/\./g, '\\.')}`, 'g');
@@ -285,7 +294,7 @@ async function main() {
       } else if (config.quarantineUnfoundKeys) {
         action = 'QUARANTINE';
         let reason = dynamicFilesFound.length > 0 
-          ? `Usage dynamique détecté via le préfixe (${dynamicFilesFound.length} fichier(s)). Réécriture auto impossible.`
+          ? `Usage dynamique détecté via le préfixe (${dynamicFilesFound.length} fichier(s)).`
           : (testFilesFound.length > 0 ? `Uniquement dans ${testFilesFound.length} test(s).` : `Introuvable.`);
         
         fullReport[parentPath].quarantined.push({ oldKey, newKey, reason, dynamicFilesFound, testFilesFound });
@@ -313,6 +322,7 @@ async function main() {
             if (res || qRes) fileModified = true;
           } 
           else if (action === 'QUARANTINE') {
+            // Extraction sécurisée de la valeur existante
             const oldParts = oldKey.split('.');
             let current = fileObj.content;
             let found = true;
@@ -323,9 +333,11 @@ async function main() {
             
             if (found && (oldParts[oldParts.length - 1] in current)) {
               const val = current[oldParts[oldParts.length - 1]];
-              delete current[oldParts[oldParts.length - 1]];
-              cleanEmptyParents(fileObj.content, oldParts);
+
+              // 1. Aplati et met à jour à l'emplacement d'origine
+              updateJsonObject(fileObj.content, oldKey, newKey);
               
+              // 2. Ajoute en plus une copie dans les clés en quarantaine
               fileObj.content.quarantinedKeys[newKey] = val;
               fileModified = true;
             }
@@ -338,6 +350,7 @@ async function main() {
         }
       });
 
+      // Code ET Tests (uniquement pour les clés UPDATE_ALL)
       const replacementsToUpdateCode = replacementsToApply.filter(r => r.action === 'UPDATE_ALL');
       if (replacementsToUpdateCode.length > 0) {
         const regexes = replacementsToUpdateCode.map(r => ({
@@ -363,10 +376,9 @@ async function main() {
       }
     }
 
-    // --- BILAN VISUEL DANS LE TERMINAL (CORRIGÉ 🆕) ---
+    // --- BILAN VISUEL DANS LE TERMINAL ---
     console.log(`\n📊 Bilan pour le groupe :`);
     
-    // On boucle sur TOUTES les clés analysées (finalReplacements), et non plus seulement sur celles à appliquer
     finalReplacements.forEach(({ oldKey }) => {
       const s = statsTracker[oldKey];
       
@@ -385,7 +397,7 @@ async function main() {
         
       } else if (s.action === 'QUARANTINE') {
         let dMsg = s.dynamicFilesFound.length > 0 ? ` (Dynamique détecté)` : ` (Introuvable)`;
-        console.log(`  🛡️  \x1b[34m${oldKey}\x1b[0m : Aplati et isolé en quarantaine${dMsg}`);
+        console.log(`  🛡️  \x1b[34m${oldKey}\x1b[0m : Aplati et copié en quarantaine${dMsg}`);
         
       } else if (s.action === 'IGNORE') {
         if (s.testFilesFound.length > 0) {
@@ -411,7 +423,6 @@ async function main() {
 
     reportContent += `## 📂 Groupe : \`${groupPath}\`\n\n`;
 
-    // ✅ Mises à jour
     if (data.updated.length > 0) {
       reportContent += `### ✅ Clés trouvées et mises à jour\n\n`;
       data.updated.forEach(item => {
@@ -426,22 +437,20 @@ async function main() {
       });
     }
 
-    // 🛡️ Quarantaine
     if (data.quarantined.length > 0) {
-      reportContent += `### 🛡️ Clés aplaties et mises en quarantaine\n*Le code source n'a pas été modifié. Ces clés ont été retirées du JSON principal et ajoutées dans \`quarantinedKeys\`.*\n\n`;
+      reportContent += `### 🛡️ Clés aplaties et mises en quarantaine\n*La clé a été aplatie à son emplacement d'origine ET une copie a été ajoutée dans \`quarantinedKeys\`. Le code source n'a pas été modifié.*\n\n`;
       data.quarantined.forEach(item => {
         reportContent += `> 🛡️ **De :** \`${item.oldKey}\`  \n> 🛡️ **Vers :** \`${item.newKey}\`\n>\n> *Raison : ${item.reason}*\n\n`;
         if (item.dynamicFilesFound && item.dynamicFilesFound.length > 0) {
           reportContent += `🔍 **Fichiers avec usage dynamique potentiel (à vérifier) :**\n${item.dynamicFilesFound.map(f => `- ${fileLink(f)}`).join('\n')}\n\n`;
         }
         if (item.testFilesFound && item.testFilesFound.length > 0) {
-          reportContent += `🧪 **Tests contenant l'ancienne clé (à corriger) :**\n${item.testFilesFound.map(f => `- ${fileLink(f)}`).join('\n')}\n\n`;
+          reportContent += `🧪 **Tests contenant l'ancienne clé (à corriger manuellement) :**\n${item.testFilesFound.map(f => `- ${fileLink(f)}`).join('\n')}\n\n`;
         }
         reportContent += `---\n\n`;
       });
     }
 
-    // 🚫 Ignorées
     if (data.ignored.length > 0) {
       reportContent += `### 🚫 Clés ignorées (Non modifiées du tout)\n\n`;
       data.ignored.forEach(item => {

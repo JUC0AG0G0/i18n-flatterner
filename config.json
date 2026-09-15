@@ -1,5 +1,6 @@
 {
   "projectRoot": "../ETERNITE_N1/client",
+  "backendRoot": "../ETERNITE_N1/server",
   "e2eRoot": "../ETERNITE_N1/specs/src",
   "translationFiles": [
     "../ETERNITE_N1/client/i18n/locales/fr.json",
@@ -13,5 +14,5 @@
   "testFilePatterns": [".unit.", ".integration.", ".intergration."],
   "autoMode": false,
   "detectDynamicUsage": true,
-  "quarantineUnfoundKeys": false
+  "quarantineUnfoundKeys": true
 }
