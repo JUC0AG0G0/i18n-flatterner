@@ -1,5 +1,6 @@
 {
   "projectRoot": "../ETERNITE_N1/client",
+  "e2eRoot": "../ETERNITE_N1/spec/src",
   "translationFiles": [
     "../ETERNITE_N1/client/i18n/locales/fr.json",
     "../ETERNITE_N1/client/i18n/locales/en.json"
@@ -9,6 +10,6 @@
   ],
   "maxDepthAllowed": 2,
   "fileExtensions": [".js", ".jsx", ".ts", ".tsx", ".vue"],
-  "testFilePatterns": [".unit.", ".integration.", ".intergration."],
+  "testFilePatterns": [".unit.", ".integration.", ".integration."],
   "autoMode": false
 }

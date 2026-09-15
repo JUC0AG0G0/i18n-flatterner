@@ -13,7 +13,7 @@ const rl = readline.createInterface({
 const askQuestion = (query) => new Promise(resolve => rl.question(query, resolve));
 
 function getAllFiles(dirPath, arrayOfFiles = []) {
-  if (!fs.existsSync(dirPath)) return arrayOfFiles;
+  if (!dirPath || !fs.existsSync(dirPath)) return arrayOfFiles;
   
   const files = fs.readdirSync(dirPath);
   files.forEach(file => {
@@ -156,15 +156,24 @@ async function main() {
     groups[parentPath].push(k);
   });
 
-  const allFiles = getAllFiles(config.projectRoot);
+  // 📂 SÉPARATION DES FICHIERS (Sources vs Tests vs E2E)
+  const allClientFiles = getAllFiles(config.projectRoot);
   const sourceFiles = [];
   const testFiles = [];
 
-  allFiles.forEach(file => {
+  // Tri des fichiers du front-end
+  allClientFiles.forEach(file => {
     const isTestFile = config.testFilePatterns && config.testFilePatterns.some(pattern => file.includes(pattern));
     if (isTestFile) testFiles.push(file);
     else sourceFiles.push(file);
   });
+
+  // 🆕 Ajout des fichiers de tests E2E directement dans les testFiles
+  if (config.e2eRoot && fs.existsSync(config.e2eRoot)) {
+    const e2eFiles = getAllFiles(config.e2eRoot);
+    testFiles.push(...e2eFiles);
+    console.log(`📌 ${e2eFiles.length} fichiers E2E détectés.`);
+  }
 
   let totalCodeFilesUpdated = 0;
   let totalTestFilesUpdated = 0;
@@ -222,7 +231,6 @@ async function main() {
     const validReplacements = [];
     const statsTracker = {};
 
-    // --- PHASE 1 : ANALYSE ---
     for (const { oldKey, newKey } of finalReplacements) {
       let sourceFilesCount = 0;
       let testFilesCount = 0;
@@ -262,7 +270,6 @@ async function main() {
       }
     }
 
-    // --- PHASE 2 : APPLICATION ---
     if (validReplacements.length > 0) {
       translations.forEach(fileObj => {
         let fileModified = false;
@@ -279,7 +286,6 @@ async function main() {
       });
 
       const regexes = validReplacements.map(r => ({
-        // 🆕 Même regex pour le remplacement
         oldRegex: new RegExp(`(?<![\\w.])${r.oldKey.replace(/\./g, '\\.')}(?![\\w.])`, 'g'),
         newKey: r.newKey
       }));
@@ -290,7 +296,6 @@ async function main() {
 
         regexes.forEach(({ oldRegex, newKey }) => {
           if (oldRegex.test(content)) {
-            // 🆕 On remplace directement (plus besoin de capturer les guillemets)
             content = content.replace(oldRegex, newKey);
             fileModified = true;
           }
