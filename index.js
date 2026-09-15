@@ -128,9 +128,7 @@ function sortObjectKeys(obj) {
   return result;
 }
 
-// 🆕 Helper pour formater les liens Markdown
 function fileLink(filePath) {
-  // Remplace les antislashs de Windows par des slashs standards pour garantir que les liens marchent partout
   const normalizedPath = filePath.replace(/\\/g, '/');
   return `[${normalizedPath}](${normalizedPath})`;
 }
@@ -163,7 +161,6 @@ async function main() {
     groups[parentPath].push(k);
   });
 
-  // Séparation des fichiers
   const allClientFiles = getAllFiles(config.projectRoot);
   const sourceFiles = [];
   const testFiles = [];
@@ -177,14 +174,12 @@ async function main() {
   if (config.e2eRoot && fs.existsSync(config.e2eRoot)) {
     const e2eFiles = getAllFiles(config.e2eRoot);
     testFiles.push(...e2eFiles);
-    console.log(`📌 ${e2eFiles.length} fichiers E2E détectés.`);
   }
 
   let totalCodeFilesUpdated = 0;
   let totalTestFilesUpdated = 0;
   let isAutoMode = !!config.autoMode;
 
-  // 🆕 Objet global pour construire le rapport complet par groupe
   const fullReport = {};
 
   for (const [parentPath, keys] of Object.entries(groups)) {
@@ -192,9 +187,7 @@ async function main() {
     console.log(`📂 Groupe : \x1b[36m${parentPath}\x1b[0m (${keys.length} clés)`);
     console.log(`======================================================`);
     
-    // Initialisation du rapport pour ce groupe
-    fullReport[parentPath] = { updated: [], ignored: [] };
-
+    fullReport[parentPath] = { updated: [], quarantined: [], ignored: [] };
     const groupReplacements = [];
 
     keys.forEach(k => {
@@ -207,7 +200,7 @@ async function main() {
     let finalReplacements = groupReplacements;
 
     if (!isAutoMode) {
-      const answer = await askQuestion("\nAction : [Entrée] Valider tout | [s] Ignorer | [m] Modifier | [a] Mode auto : ");
+      const answer = await askQuestion("\nAction : [Entrée] Valider tout | [s] Ignorer | [m] Modifier | [a] Mode auto | [q] Mode auto : ");
       choice = answer.trim().toLowerCase();
 
       if (choice === 'a') {
@@ -222,7 +215,7 @@ async function main() {
     if (choice === 's') {
       console.log("⏩ Groupe ignoré.");
       keys.forEach(k => {
-        fullReport[parentPath].ignored.push({ key: k.path, reason: "Ignoré manuellement par l'utilisateur.", testFilesFound: [] });
+        fullReport[parentPath].ignored.push({ key: k.path, reason: "Ignoré manuellement par l'utilisateur." });
       });
       continue;
     }
@@ -235,27 +228,37 @@ async function main() {
       }
     }
 
-    console.log("⏳ Vérification conditionnelle (Source vs Tests)...");
+    if (choice === 'q') {
+      console.log("🛑 Arrêt prématuré du programme. Génération du rapport en cours avec les données traitées...");
 
-    const validReplacements = [];
+      keys.forEach(k => {
+        fullReport[parentPath].ignored.push({ key: k.path, reason: "Arrêt du script en cours de traitement." });
+      });
+      break;
+    }
+
+    console.log("⏳ Vérification conditionnelle (Source vs Tests vs Dynamique)...");
+
+    const replacementsToApply = [];
     const statsTracker = {};
 
     // --- PHASE 1 : ANALYSE ---
     for (const { oldKey, newKey } of finalReplacements) {
       let sourceFilesFound = [];
       let testFilesFound = [];
+      let dynamicFilesFound = [];
       let inQuarantined = false;
 
-      const regex = new RegExp(`(?<![\\w.])${oldKey.replace(/\./g, '\\.')}(?![\\w.])`, 'g');
+      const exactRegex = new RegExp(`(?<![\\w.])${oldKey.replace(/\./g, '\\.')}(?![\\w.])`, 'g');
       
       for (const file of sourceFiles) {
         const content = fs.readFileSync(file, 'utf-8');
-        if (regex.test(content)) sourceFilesFound.push(file);
+        if (exactRegex.test(content)) sourceFilesFound.push(file);
       }
 
       for (const file of testFiles) {
         const content = fs.readFileSync(file, 'utf-8');
-        if (regex.test(content)) testFilesFound.push(file);
+        if (exactRegex.test(content)) testFilesFound.push(file);
       }
 
       for (const fileObj of translations) {
@@ -265,30 +268,68 @@ async function main() {
         }
       }
 
-      statsTracker[oldKey] = { sourceFilesFound, testFilesFound, inQuarantined };
-
-      if (sourceFilesFound.length > 0 || inQuarantined) {
-        validReplacements.push({ oldKey, newKey });
-        fullReport[parentPath].updated.push({ oldKey, newKey, sourceFilesFound, testFilesFound, inQuarantined });
-      } else {
-        let reason = "";
-        if (testFilesFound.length > 0) {
-          reason = `Trouvé uniquement dans ${testFilesFound.length} fichier(s) de test (Génération dynamique probable).`;
-        } else {
-          reason = `Introuvable nulle part dans le projet (Code source, Quarantaine ou Tests).`;
+      if (config.detectDynamicUsage && sourceFilesFound.length === 0 && !inQuarantined) {
+        const dynamicParent = oldKey.split('.').slice(0, -1).join('.') + '.';
+        const dynamicRegex = new RegExp(`(?<![\\w.])${dynamicParent.replace(/\./g, '\\.')}`, 'g');
+        for (const file of sourceFiles) {
+          const content = fs.readFileSync(file, 'utf-8');
+          if (dynamicRegex.test(content)) dynamicFilesFound.push(file);
         }
+      }
+
+      // DÉCISION DE L'ACTION
+      let action = 'IGNORE';
+      if (sourceFilesFound.length > 0 || inQuarantined) {
+        action = 'UPDATE_ALL';
+        fullReport[parentPath].updated.push({ oldKey, newKey, sourceFilesFound, testFilesFound, inQuarantined });
+      } else if (config.quarantineUnfoundKeys) {
+        action = 'QUARANTINE';
+        let reason = dynamicFilesFound.length > 0 
+          ? `Usage dynamique détecté via le préfixe (${dynamicFilesFound.length} fichier(s)). Réécriture auto impossible.`
+          : (testFilesFound.length > 0 ? `Uniquement dans ${testFilesFound.length} test(s).` : `Introuvable.`);
+        
+        fullReport[parentPath].quarantined.push({ oldKey, newKey, reason, dynamicFilesFound, testFilesFound });
+      } else {
+        let reason = testFilesFound.length > 0 
+          ? `Trouvé uniquement dans ${testFilesFound.length} test(s) (Clé dynamique probable).` 
+          : `Introuvable partout et mode quarantaine désactivé.`;
         fullReport[parentPath].ignored.push({ key: oldKey, reason, testFilesFound });
       }
+
+      statsTracker[oldKey] = { sourceFilesFound, testFilesFound, dynamicFilesFound, inQuarantined, action };
+      if (action !== 'IGNORE') replacementsToApply.push({ oldKey, newKey, action });
     }
 
     // --- PHASE 2 : APPLICATION ---
-    if (validReplacements.length > 0) {
+    if (replacementsToApply.length > 0) {
       translations.forEach(fileObj => {
         let fileModified = false;
-        validReplacements.forEach(({ oldKey, newKey }) => {
-          const res = updateJsonObject(fileObj.content, oldKey, newKey);
-          const qRes = updateQuarantinedKeys(fileObj.content, oldKey, newKey);
-          if (res || qRes) fileModified = true;
+        if (!fileObj.content.quarantinedKeys) fileObj.content.quarantinedKeys = {};
+
+        replacementsToApply.forEach(({ oldKey, newKey, action }) => {
+          if (action === 'UPDATE_ALL') {
+            const res = updateJsonObject(fileObj.content, oldKey, newKey);
+            const qRes = updateQuarantinedKeys(fileObj.content, oldKey, newKey);
+            if (res || qRes) fileModified = true;
+          } 
+          else if (action === 'QUARANTINE') {
+            const oldParts = oldKey.split('.');
+            let current = fileObj.content;
+            let found = true;
+            for (let i = 0; i < oldParts.length - 1; i++) {
+              current = current?.[oldParts[i]];
+              if (!current) { found = false; break; }
+            }
+            
+            if (found && (oldParts[oldParts.length - 1] in current)) {
+              const val = current[oldParts[oldParts.length - 1]];
+              delete current[oldParts[oldParts.length - 1]];
+              cleanEmptyParents(fileObj.content, oldParts);
+              
+              fileObj.content.quarantinedKeys[newKey] = val;
+              fileModified = true;
+            }
+          }
         });
 
         if (fileModified) {
@@ -297,33 +338,39 @@ async function main() {
         }
       });
 
-      const regexes = validReplacements.map(r => ({
-        oldRegex: new RegExp(`(?<![\\w.])${r.oldKey.replace(/\./g, '\\.')}(?![\\w.])`, 'g'),
-        newKey: r.newKey
-      }));
+      const replacementsToUpdateCode = replacementsToApply.filter(r => r.action === 'UPDATE_ALL');
+      if (replacementsToUpdateCode.length > 0) {
+        const regexes = replacementsToUpdateCode.map(r => ({
+          oldRegex: new RegExp(`(?<![\\w.])${r.oldKey.replace(/\./g, '\\.')}(?![\\w.])`, 'g'),
+          newKey: r.newKey
+        }));
 
-      [...sourceFiles, ...testFiles].forEach(file => {
-        let content = fs.readFileSync(file, 'utf-8');
-        let fileModified = false;
+        [...sourceFiles, ...testFiles].forEach(file => {
+          let content = fs.readFileSync(file, 'utf-8');
+          let fileModified = false;
 
-        regexes.forEach(({ oldRegex, newKey }) => {
-          if (oldRegex.test(content)) {
-            content = content.replace(oldRegex, newKey);
-            fileModified = true;
+          regexes.forEach(({ oldRegex, newKey }) => {
+            if (oldRegex.test(content)) {
+              content = content.replace(oldRegex, newKey);
+              fileModified = true;
+            }
+          });
+
+          if (fileModified) {
+            fs.writeFileSync(file, content, 'utf-8');
           }
         });
-
-        if (fileModified) {
-          fs.writeFileSync(file, content, 'utf-8');
-        }
-      });
+      }
     }
 
+    // --- BILAN VISUEL DANS LE TERMINAL (CORRIGÉ 🆕) ---
     console.log(`\n📊 Bilan pour le groupe :`);
+    
+    // On boucle sur TOUTES les clés analysées (finalReplacements), et non plus seulement sur celles à appliquer
     finalReplacements.forEach(({ oldKey }) => {
       const s = statsTracker[oldKey];
-
-      if (s.sourceFilesFound.length > 0 || s.inQuarantined) {
+      
+      if (s.action === 'UPDATE_ALL') {
         let messages = [];
         if (s.sourceFilesFound.length > 0) {
           messages.push(`Source (${s.sourceFilesFound.length} f.)`);
@@ -334,80 +381,85 @@ async function main() {
           totalTestFilesUpdated += s.testFilesFound.length;
         }
         if (s.inQuarantined) messages.push(`Quarantaine`);
-        
         console.log(`  ✔️  \x1b[32m${oldKey}\x1b[0m : Mis à jour [${messages.join(' | ')}]`);
-      } else {
+        
+      } else if (s.action === 'QUARANTINE') {
+        let dMsg = s.dynamicFilesFound.length > 0 ? ` (Dynamique détecté)` : ` (Introuvable)`;
+        console.log(`  🛡️  \x1b[34m${oldKey}\x1b[0m : Aplati et isolé en quarantaine${dMsg}`);
+        
+      } else if (s.action === 'IGNORE') {
         if (s.testFilesFound.length > 0) {
           console.log(`  🚫  \x1b[33m${oldKey}\x1b[0m : Ignoré (Trouvé UNIQUEMENT dans ${s.testFilesFound.length} test(s))`);
         } else {
-          console.log(`  🚫  \x1b[31m${oldKey}\x1b[0m : Ignoré (Introuvable partout)`);
+          console.log(`  🚫  \x1b[31m${oldKey}\x1b[0m : Ignoré (Introuvable partout et quarantaine désactivée)`);
         }
       }
     });
   }
 
-  // 🆕 GÉNÉRATION DU RAPPORT COMPLET
+  // --- GÉNÉRATION DU RAPPORT COMPLET ---
   const reportPath = './ignored_keys_report.md';
   let reportContent = '# 📋 Rapport de refactoring des clés de traduction\n\n';
   reportContent += `*Généré le : ${new Date().toLocaleString('fr-FR')}*\n\n`;
   reportContent += `---\n\n`;
 
+  let reportHasContent = false;
+
   for (const [groupPath, data] of Object.entries(fullReport)) {
-    // Ne pas afficher les groupes complètement vides d'actions
-    if (data.updated.length === 0 && data.ignored.length === 0) continue;
+    if (data.updated.length === 0 && data.quarantined.length === 0 && data.ignored.length === 0) continue;
+    reportHasContent = true;
 
     reportContent += `## 📂 Groupe : \`${groupPath}\`\n\n`;
 
-    // 🟢 Section des clés mises à jour
+    // ✅ Mises à jour
     if (data.updated.length > 0) {
       reportContent += `### ✅ Clés trouvées et mises à jour\n\n`;
       data.updated.forEach(item => {
-        reportContent += `**Ancienne :** \`${item.oldKey}\`\n`;
-        reportContent += `**Nouvelle :** \`${item.newKey}\`\n\n`;
-        
-        if (item.inQuarantined) {
-          reportContent += `🛡️ *Mise à jour effectuée dans \`quarantinedKeys\`*\n\n`;
-        }
-        
+        reportContent += `**Ancienne :** \`${item.oldKey}\`  \n**Nouvelle :** \`${item.newKey}\`\n\n`;
         if (item.sourceFilesFound.length > 0) {
-          reportContent += `📄 **Modifié dans les fichiers sources :**\n`;
-          item.sourceFilesFound.forEach(f => {
-            reportContent += `- ${fileLink(f)}\n`;
-          });
-          reportContent += `\n`;
+          reportContent += `📄 **Sources modifiées :**\n${item.sourceFilesFound.map(f => `- ${fileLink(f)}`).join('\n')}\n\n`;
         }
-
         if (item.testFilesFound.length > 0) {
-          reportContent += `🧪 **Modifié dans les fichiers de tests :**\n`;
-          item.testFilesFound.forEach(f => {
-            reportContent += `- ${fileLink(f)}\n`;
-          });
-          reportContent += `\n`;
+          reportContent += `🧪 **Tests modifiés :**\n${item.testFilesFound.map(f => `- ${fileLink(f)}`).join('\n')}\n\n`;
         }
         reportContent += `---\n\n`;
       });
     }
 
-    // 🔴 Section des clés ignorées
+    // 🛡️ Quarantaine
+    if (data.quarantined.length > 0) {
+      reportContent += `### 🛡️ Clés aplaties et mises en quarantaine\n*Le code source n'a pas été modifié. Ces clés ont été retirées du JSON principal et ajoutées dans \`quarantinedKeys\`.*\n\n`;
+      data.quarantined.forEach(item => {
+        reportContent += `> 🛡️ **De :** \`${item.oldKey}\`  \n> 🛡️ **Vers :** \`${item.newKey}\`\n>\n> *Raison : ${item.reason}*\n\n`;
+        if (item.dynamicFilesFound && item.dynamicFilesFound.length > 0) {
+          reportContent += `🔍 **Fichiers avec usage dynamique potentiel (à vérifier) :**\n${item.dynamicFilesFound.map(f => `- ${fileLink(f)}`).join('\n')}\n\n`;
+        }
+        if (item.testFilesFound && item.testFilesFound.length > 0) {
+          reportContent += `🧪 **Tests contenant l'ancienne clé (à corriger) :**\n${item.testFilesFound.map(f => `- ${fileLink(f)}`).join('\n')}\n\n`;
+        }
+        reportContent += `---\n\n`;
+      });
+    }
+
+    // 🚫 Ignorées
     if (data.ignored.length > 0) {
-      reportContent += `### 🚫 Clés ignorées (Non modifiées dans le JSON)\n\n`;
+      reportContent += `### 🚫 Clés ignorées (Non modifiées du tout)\n\n`;
       data.ignored.forEach(item => {
         reportContent += `> ⚠️ **\`${item.key}\`**\n>\n> *Raison : ${item.reason}*\n\n`;
         
         if (item.testFilesFound && item.testFilesFound.length > 0) {
-          reportContent += `🔍 **Fichiers contenant cette clé (à corriger manuellement si besoin) :**\n`;
-          item.testFilesFound.forEach(f => {
-            reportContent += `- ${fileLink(f)}\n`;
-          });
-          reportContent += `\n`;
+          reportContent += `🧪 **Tests contenant l'ancienne clé :**\n${item.testFilesFound.map(f => `- ${fileLink(f)}`).join('\n')}\n\n`;
         }
+        
         reportContent += `---\n\n`;
       });
     }
   }
 
-  fs.writeFileSync(reportPath, reportContent, 'utf-8');
-  console.log(`\n📄 \x1b[36mLe rapport ultra-détaillé avec liens cliquables a été généré : ${reportPath}\x1b[0m`);
+  if (reportHasContent) {
+    fs.writeFileSync(reportPath, reportContent, 'utf-8');
+    console.log(`\n📄 \x1b[36mLe rapport détaillé a été généré : ${reportPath}\x1b[0m`);
+  }
 
   console.log("\n🎉 Traitement terminé avec succès !");
   console.log(`Total occurrences modifiées (Sources) : ${totalCodeFilesUpdated}`);
