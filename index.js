@@ -19,20 +19,16 @@ function getAllFiles(dirPath, arrayOfFiles = []) {
   files.forEach(file => {
     const fullPath = path.join(dirPath, file);
     if (fs.statSync(fullPath).isDirectory()) {
-      // Ignore les dossiers cachés et node_modules
       if (!file.startsWith('.') && file !== 'node_modules') {
         getAllFiles(fullPath, arrayOfFiles);
       }
     } else {
-      // 🆕 Vérification si c'est un fichier de test
       const isTestFile = config.testFilePatterns && config.testFilePatterns.some(pattern => file.includes(pattern));
       
-      // Si l'option est activée et que c'est un fichier de test, on l'ignore
       if (config.ignoreTestFiles && isTestFile) {
-        return; // Passe au fichier suivant
+        return; 
       }
 
-      // Si l'extension est valide, on garde le fichier
       if (config.fileExtensions.includes(path.extname(file))) {
         arrayOfFiles.push(fullPath);
       }
@@ -123,7 +119,6 @@ function updateQuarantinedKeys(jsonObj, oldKey, newKey) {
   return false;
 }
 
-// Trie récursivement toutes les clés d'un objet par ordre alphabétique
 function sortObjectKeys(obj) {
   if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) {
     return obj;
@@ -170,6 +165,9 @@ async function main() {
   const codeFiles = getAllFiles(config.projectRoot);
   let totalCodeFilesUpdated = 0;
 
+  // 🆕 Initialisation du mode automatique depuis la config
+  let isAutoMode = !!config.autoMode;
+
   for (const [parentPath, keys] of Object.entries(groups)) {
     console.log(`\n======================================================`);
     console.log(`📂 Groupe : \x1b[36m${parentPath}\x1b[0m (${keys.length} clés)`);
@@ -183,15 +181,28 @@ async function main() {
       groupReplacements.push({ oldKey: k.path, newKey: suggested });
     });
 
-    const answer = await askQuestion("\nAction : [Entrée] Valider tout | [s] Ignorer | [m] Modifier : ");
-    const choice = answer.trim().toLowerCase();
+    let choice = '';
+    let finalReplacements = groupReplacements;
+
+    // 🆕 GESTION DU MODE AUTOMATIQUE
+    if (!isAutoMode) {
+      const answer = await askQuestion("\nAction : [Entrée] Valider tout | [s] Ignorer | [m] Modifier | [a] Mode auto : ");
+      choice = answer.trim().toLowerCase();
+
+      if (choice === 'a') {
+        isAutoMode = true;
+        console.log("🤖 Mode automatique activé pour le reste des groupes !");
+        choice = ''; // Considère ça comme une validation classique pour ce groupe
+      }
+    } else {
+      console.log("🤖 Validation automatique du groupe...");
+    }
 
     if (choice === 's') {
       console.log("⏩ Groupe ignoré.");
       continue;
     }
 
-    let finalReplacements = groupReplacements;
     if (choice === 'm') {
       finalReplacements = [];
       for (const item of groupReplacements) {
@@ -205,12 +216,10 @@ async function main() {
     const validReplacements = [];
     const statsTracker = {};
 
-    // --- PHASE 1 : ANALYSE (Dry Run) ---
     for (const { oldKey, newKey } of finalReplacements) {
       let codeFilesCount = 0;
       let inQuarantined = false;
 
-      // Cherche dans le code
       const regex = new RegExp(`(['"\`])${oldKey.replace(/\./g, '\\.')}\\1`, 'g');
       for (const file of codeFiles) {
         const content = fs.readFileSync(file, 'utf-8');
@@ -219,7 +228,6 @@ async function main() {
         }
       }
 
-      // Cherche dans quarantinedKeys
       for (const fileObj of translations) {
         if (fileObj.content.quarantinedKeys && fileObj.content.quarantinedKeys[oldKey]) {
           inQuarantined = true;
@@ -234,9 +242,7 @@ async function main() {
       }
     }
 
-    // --- PHASE 2 : APPLICATION ET TRI (Seulement sur les clés valides) ---
     if (validReplacements.length > 0) {
-      // 1. Mise à jour et tri des JSON de traduction
       translations.forEach(fileObj => {
         let fileModified = false;
 
@@ -247,13 +253,11 @@ async function main() {
         });
 
         if (fileModified) {
-          // On trie tout l'objet de traduction avant de le sauvegarder
           fileObj.content = sortObjectKeys(fileObj.content);
           fs.writeFileSync(fileObj.path, JSON.stringify(fileObj.content, null, 2), 'utf-8');
         }
       });
 
-      // 2. Mise à jour du code front-end
       const regexes = validReplacements.map(r => ({
         oldRegex: new RegExp(`(['"\`])${r.oldKey.replace(/\./g, '\\.')}\\1`, 'g'),
         newKey: r.newKey
@@ -276,7 +280,6 @@ async function main() {
       });
     }
 
-    // --- BILAN VISUEL ---
     console.log(`\n📊 Bilan pour le groupe :`);
     finalReplacements.forEach(({ oldKey }) => {
       const s = statsTracker[oldKey];

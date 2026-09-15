@@ -10,5 +10,6 @@
   "maxDepthAllowed": 2,
   "fileExtensions": [".js", ".jsx", ".ts", ".tsx", ".vue"],
   "ignoreTestFiles": true,
-  "testFilePatterns": [".unit.", ".integration.", ".intergration."]
+  "testFilePatterns": [".unit.", ".integration.", ".intergration."],
+  "autoMode": false
 }
