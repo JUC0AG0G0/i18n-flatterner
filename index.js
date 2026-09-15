@@ -156,7 +156,6 @@ async function main() {
     groups[parentPath].push(k);
   });
 
-  // 🆕 SÉPARATION DES FICHIERS (Sources vs Tests)
   const allFiles = getAllFiles(config.projectRoot);
   const sourceFiles = [];
   const testFiles = [];
@@ -170,6 +169,9 @@ async function main() {
   let totalCodeFilesUpdated = 0;
   let totalTestFilesUpdated = 0;
   let isAutoMode = !!config.autoMode;
+
+  // 🆕 Tableau pour stocker le rapport des clés ignorées
+  const ignoredReport = [];
 
   for (const [parentPath, keys] of Object.entries(groups)) {
     console.log(`\n======================================================`);
@@ -202,6 +204,10 @@ async function main() {
 
     if (choice === 's') {
       console.log("⏩ Groupe ignoré.");
+      // 🆕 Ajout au rapport : ignoré manuellement
+      keys.forEach(k => {
+        ignoredReport.push({ key: k.path, reason: "Ignoré manuellement par l'utilisateur." });
+      });
       continue;
     }
 
@@ -218,7 +224,6 @@ async function main() {
     const validReplacements = [];
     const statsTracker = {};
 
-    // --- PHASE 1 : ANALYSE ---
     for (const { oldKey, newKey } of finalReplacements) {
       let sourceFilesCount = 0;
       let testFilesCount = 0;
@@ -226,19 +231,16 @@ async function main() {
 
       const regex = new RegExp(`(['"\`])${oldKey.replace(/\./g, '\\.')}\\1`, 'g');
       
-      // Cherche dans le vrai code
       for (const file of sourceFiles) {
         const content = fs.readFileSync(file, 'utf-8');
         if (regex.test(content)) sourceFilesCount++;
       }
 
-      // Cherche dans les tests
       for (const file of testFiles) {
         const content = fs.readFileSync(file, 'utf-8');
         if (regex.test(content)) testFilesCount++;
       }
 
-      // Cherche dans quarantinedKeys
       for (const fileObj of translations) {
         if (fileObj.content.quarantinedKeys && fileObj.content.quarantinedKeys[oldKey]) {
           inQuarantined = true;
@@ -248,16 +250,21 @@ async function main() {
 
       statsTracker[oldKey] = { sourceFilesCount, testFilesCount, inQuarantined };
 
-      // ✨ LA NOUVELLE RÈGLE DE VALIDATION ✨
-      // Valide uniquement si trouvé dans la source ou en quarantaine
       if (sourceFilesCount > 0 || inQuarantined) {
         validReplacements.push({ oldKey, newKey });
+      } else {
+        // 🆕 Ajout au rapport : rejeté par l'analyse
+        let reason = "";
+        if (testFilesCount > 0) {
+          reason = `Trouvé uniquement dans ${testFilesCount} test(s) (Clé dynamique probable).`;
+        } else {
+          reason = `Introuvable nulle part dans le projet (Code source, Quarantaine ou Tests).`;
+        }
+        ignoredReport.push({ key: oldKey, reason: reason });
       }
     }
 
-    // --- PHASE 2 : APPLICATION (Sur les clés validées) ---
     if (validReplacements.length > 0) {
-      // 1. JSON
       translations.forEach(fileObj => {
         let fileModified = false;
         validReplacements.forEach(({ oldKey, newKey }) => {
@@ -272,13 +279,11 @@ async function main() {
         }
       });
 
-      // 2. Code ET Tests (puisqu'ils ont été validés, on modifie tout le monde)
       const regexes = validReplacements.map(r => ({
         oldRegex: new RegExp(`(['"\`])${r.oldKey.replace(/\./g, '\\.')}\\1`, 'g'),
         newKey: r.newKey
       }));
 
-      // On applique la modif sur tous les fichiers (sourceFiles + testFiles)
       [...sourceFiles, ...testFiles].forEach(file => {
         let content = fs.readFileSync(file, 'utf-8');
         let fileModified = false;
@@ -296,7 +301,6 @@ async function main() {
       });
     }
 
-    // --- BILAN VISUEL ---
     console.log(`\n📊 Bilan pour le groupe :`);
     finalReplacements.forEach(({ oldKey }) => {
       const s = statsTracker[oldKey];
@@ -322,6 +326,24 @@ async function main() {
         }
       }
     });
+  }
+
+  // 🆕 GÉNÉRATION DU FICHIER DE RAPPORT EN FIN DE SCRIPT
+  if (ignoredReport.length > 0) {
+    const reportPath = './ignored_keys_report.md';
+    let reportContent = '# Rapport des clés de traduction non modifiées\n\n';
+    reportContent += `*Généré le : ${new Date().toLocaleString('fr-FR')}*\n\n`;
+    reportContent += `Ces clés ont été identifiées comme ayant une profondeur excessive, mais n'ont **pas** été modifiées dans vos fichiers JSON afin de ne rien casser.\n\n`;
+    reportContent += `### Détail des clés ignorées :\n\n`;
+    
+    ignoredReport.forEach(item => {
+      reportContent += `- **\`${item.key}\`** : ${item.reason}\n`;
+    });
+
+    fs.writeFileSync(reportPath, reportContent, 'utf-8');
+    console.log(`\n📄 \x1b[36mUn rapport des clés ignorées a été généré : ${reportPath}\x1b[0m`);
+  } else {
+    console.log(`\n📄 Aucune clé n'a été ignorée, le rapport n'est pas nécessaire.`);
   }
 
   console.log("\n🎉 Traitement terminé avec succès !");
