@@ -128,6 +128,13 @@ function sortObjectKeys(obj) {
   return result;
 }
 
+// 🆕 Helper pour formater les liens Markdown
+function fileLink(filePath) {
+  // Remplace les antislashs de Windows par des slashs standards pour garantir que les liens marchent partout
+  const normalizedPath = filePath.replace(/\\/g, '/');
+  return `[${normalizedPath}](${normalizedPath})`;
+}
+
 async function main() {
   console.log("🚀 Analyse des fichiers de traduction et du code source...");
 
@@ -156,19 +163,17 @@ async function main() {
     groups[parentPath].push(k);
   });
 
-  // 📂 SÉPARATION DES FICHIERS (Sources vs Tests vs E2E)
+  // Séparation des fichiers
   const allClientFiles = getAllFiles(config.projectRoot);
   const sourceFiles = [];
   const testFiles = [];
 
-  // Tri des fichiers du front-end
   allClientFiles.forEach(file => {
     const isTestFile = config.testFilePatterns && config.testFilePatterns.some(pattern => file.includes(pattern));
     if (isTestFile) testFiles.push(file);
     else sourceFiles.push(file);
   });
 
-  // 🆕 Ajout des fichiers de tests E2E directement dans les testFiles
   if (config.e2eRoot && fs.existsSync(config.e2eRoot)) {
     const e2eFiles = getAllFiles(config.e2eRoot);
     testFiles.push(...e2eFiles);
@@ -179,13 +184,17 @@ async function main() {
   let totalTestFilesUpdated = 0;
   let isAutoMode = !!config.autoMode;
 
-  const ignoredReport = [];
+  // 🆕 Objet global pour construire le rapport complet par groupe
+  const fullReport = {};
 
   for (const [parentPath, keys] of Object.entries(groups)) {
     console.log(`\n======================================================`);
     console.log(`📂 Groupe : \x1b[36m${parentPath}\x1b[0m (${keys.length} clés)`);
     console.log(`======================================================`);
     
+    // Initialisation du rapport pour ce groupe
+    fullReport[parentPath] = { updated: [], ignored: [] };
+
     const groupReplacements = [];
 
     keys.forEach(k => {
@@ -213,7 +222,7 @@ async function main() {
     if (choice === 's') {
       console.log("⏩ Groupe ignoré.");
       keys.forEach(k => {
-        ignoredReport.push({ key: k.path, reason: "Ignoré manuellement par l'utilisateur." });
+        fullReport[parentPath].ignored.push({ key: k.path, reason: "Ignoré manuellement par l'utilisateur.", testFilesFound: [] });
       });
       continue;
     }
@@ -231,21 +240,22 @@ async function main() {
     const validReplacements = [];
     const statsTracker = {};
 
+    // --- PHASE 1 : ANALYSE ---
     for (const { oldKey, newKey } of finalReplacements) {
-      let sourceFilesCount = 0;
-      let testFilesCount = 0;
+      let sourceFilesFound = [];
+      let testFilesFound = [];
       let inQuarantined = false;
 
       const regex = new RegExp(`(?<![\\w.])${oldKey.replace(/\./g, '\\.')}(?![\\w.])`, 'g');
       
       for (const file of sourceFiles) {
         const content = fs.readFileSync(file, 'utf-8');
-        if (regex.test(content)) sourceFilesCount++;
+        if (regex.test(content)) sourceFilesFound.push(file);
       }
 
       for (const file of testFiles) {
         const content = fs.readFileSync(file, 'utf-8');
-        if (regex.test(content)) testFilesCount++;
+        if (regex.test(content)) testFilesFound.push(file);
       }
 
       for (const fileObj of translations) {
@@ -255,21 +265,23 @@ async function main() {
         }
       }
 
-      statsTracker[oldKey] = { sourceFilesCount, testFilesCount, inQuarantined };
+      statsTracker[oldKey] = { sourceFilesFound, testFilesFound, inQuarantined };
 
-      if (sourceFilesCount > 0 || inQuarantined) {
+      if (sourceFilesFound.length > 0 || inQuarantined) {
         validReplacements.push({ oldKey, newKey });
+        fullReport[parentPath].updated.push({ oldKey, newKey, sourceFilesFound, testFilesFound, inQuarantined });
       } else {
         let reason = "";
-        if (testFilesCount > 0) {
-          reason = `Trouvé uniquement dans ${testFilesCount} test(s) (Clé dynamique probable).`;
+        if (testFilesFound.length > 0) {
+          reason = `Trouvé uniquement dans ${testFilesFound.length} fichier(s) de test (Génération dynamique probable).`;
         } else {
           reason = `Introuvable nulle part dans le projet (Code source, Quarantaine ou Tests).`;
         }
-        ignoredReport.push({ key: oldKey, reason: reason });
+        fullReport[parentPath].ignored.push({ key: oldKey, reason, testFilesFound });
       }
     }
 
+    // --- PHASE 2 : APPLICATION ---
     if (validReplacements.length > 0) {
       translations.forEach(fileObj => {
         let fileModified = false;
@@ -311,22 +323,22 @@ async function main() {
     finalReplacements.forEach(({ oldKey }) => {
       const s = statsTracker[oldKey];
 
-      if (s.sourceFilesCount > 0 || s.inQuarantined) {
+      if (s.sourceFilesFound.length > 0 || s.inQuarantined) {
         let messages = [];
-        if (s.sourceFilesCount > 0) {
-          messages.push(`Source (${s.sourceFilesCount} f.)`);
-          totalCodeFilesUpdated += s.sourceFilesCount;
+        if (s.sourceFilesFound.length > 0) {
+          messages.push(`Source (${s.sourceFilesFound.length} f.)`);
+          totalCodeFilesUpdated += s.sourceFilesFound.length;
         }
-        if (s.testFilesCount > 0) {
-          messages.push(`Tests (${s.testFilesCount} f.)`);
-          totalTestFilesUpdated += s.testFilesCount;
+        if (s.testFilesFound.length > 0) {
+          messages.push(`Tests (${s.testFilesFound.length} f.)`);
+          totalTestFilesUpdated += s.testFilesFound.length;
         }
         if (s.inQuarantined) messages.push(`Quarantaine`);
         
         console.log(`  ✔️  \x1b[32m${oldKey}\x1b[0m : Mis à jour [${messages.join(' | ')}]`);
       } else {
-        if (s.testFilesCount > 0) {
-          console.log(`  🚫  \x1b[33m${oldKey}\x1b[0m : Ignoré (Trouvé UNIQUEMENT dans ${s.testFilesCount} test(s))`);
+        if (s.testFilesFound.length > 0) {
+          console.log(`  🚫  \x1b[33m${oldKey}\x1b[0m : Ignoré (Trouvé UNIQUEMENT dans ${s.testFilesFound.length} test(s))`);
         } else {
           console.log(`  🚫  \x1b[31m${oldKey}\x1b[0m : Ignoré (Introuvable partout)`);
         }
@@ -334,22 +346,68 @@ async function main() {
     });
   }
 
-  if (ignoredReport.length > 0) {
-    const reportPath = './ignored_keys_report.md';
-    let reportContent = '# Rapport des clés de traduction non modifiées\n\n';
-    reportContent += `*Généré le : ${new Date().toLocaleString('fr-FR')}*\n\n`;
-    reportContent += `Ces clés ont été identifiées comme ayant une profondeur excessive, mais n'ont **pas** été modifiées dans vos fichiers JSON afin de ne rien casser.\n\n`;
-    reportContent += `### Détail des clés ignorées :\n\n`;
-    
-    ignoredReport.forEach(item => {
-      reportContent += `- **\`${item.key}\`** : ${item.reason}\n`;
-    });
+  // 🆕 GÉNÉRATION DU RAPPORT COMPLET
+  const reportPath = './ignored_keys_report.md';
+  let reportContent = '# 📋 Rapport de refactoring des clés de traduction\n\n';
+  reportContent += `*Généré le : ${new Date().toLocaleString('fr-FR')}*\n\n`;
+  reportContent += `---\n\n`;
 
-    fs.writeFileSync(reportPath, reportContent, 'utf-8');
-    console.log(`\n📄 \x1b[36mUn rapport des clés ignorées a été généré : ${reportPath}\x1b[0m`);
-  } else {
-    console.log(`\n📄 Aucune clé n'a été ignorée, le rapport n'est pas nécessaire.`);
+  for (const [groupPath, data] of Object.entries(fullReport)) {
+    // Ne pas afficher les groupes complètement vides d'actions
+    if (data.updated.length === 0 && data.ignored.length === 0) continue;
+
+    reportContent += `## 📂 Groupe : \`${groupPath}\`\n\n`;
+
+    // 🟢 Section des clés mises à jour
+    if (data.updated.length > 0) {
+      reportContent += `### ✅ Clés trouvées et mises à jour\n\n`;
+      data.updated.forEach(item => {
+        reportContent += `**Ancienne :** \`${item.oldKey}\`\n`;
+        reportContent += `**Nouvelle :** \`${item.newKey}\`\n\n`;
+        
+        if (item.inQuarantined) {
+          reportContent += `🛡️ *Mise à jour effectuée dans \`quarantinedKeys\`*\n\n`;
+        }
+        
+        if (item.sourceFilesFound.length > 0) {
+          reportContent += `📄 **Modifié dans les fichiers sources :**\n`;
+          item.sourceFilesFound.forEach(f => {
+            reportContent += `- ${fileLink(f)}\n`;
+          });
+          reportContent += `\n`;
+        }
+
+        if (item.testFilesFound.length > 0) {
+          reportContent += `🧪 **Modifié dans les fichiers de tests :**\n`;
+          item.testFilesFound.forEach(f => {
+            reportContent += `- ${fileLink(f)}\n`;
+          });
+          reportContent += `\n`;
+        }
+        reportContent += `---\n\n`;
+      });
+    }
+
+    // 🔴 Section des clés ignorées
+    if (data.ignored.length > 0) {
+      reportContent += `### 🚫 Clés ignorées (Non modifiées dans le JSON)\n\n`;
+      data.ignored.forEach(item => {
+        reportContent += `> ⚠️ **\`${item.key}\`**\n>\n> *Raison : ${item.reason}*\n\n`;
+        
+        if (item.testFilesFound && item.testFilesFound.length > 0) {
+          reportContent += `🔍 **Fichiers contenant cette clé (à corriger manuellement si besoin) :**\n`;
+          item.testFilesFound.forEach(f => {
+            reportContent += `- ${fileLink(f)}\n`;
+          });
+          reportContent += `\n`;
+        }
+        reportContent += `---\n\n`;
+      });
+    }
   }
+
+  fs.writeFileSync(reportPath, reportContent, 'utf-8');
+  console.log(`\n📄 \x1b[36mLe rapport ultra-détaillé avec liens cliquables a été généré : ${reportPath}\x1b[0m`);
 
   console.log("\n🎉 Traitement terminé avec succès !");
   console.log(`Total occurrences modifiées (Sources) : ${totalCodeFilesUpdated}`);
