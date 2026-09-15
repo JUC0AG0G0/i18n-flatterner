@@ -170,7 +170,6 @@ async function main() {
   let totalTestFilesUpdated = 0;
   let isAutoMode = !!config.autoMode;
 
-  // 🆕 Tableau pour stocker le rapport des clés ignorées
   const ignoredReport = [];
 
   for (const [parentPath, keys] of Object.entries(groups)) {
@@ -204,7 +203,6 @@ async function main() {
 
     if (choice === 's') {
       console.log("⏩ Groupe ignoré.");
-      // 🆕 Ajout au rapport : ignoré manuellement
       keys.forEach(k => {
         ignoredReport.push({ key: k.path, reason: "Ignoré manuellement par l'utilisateur." });
       });
@@ -224,12 +222,13 @@ async function main() {
     const validReplacements = [];
     const statsTracker = {};
 
+    // --- PHASE 1 : ANALYSE ---
     for (const { oldKey, newKey } of finalReplacements) {
       let sourceFilesCount = 0;
       let testFilesCount = 0;
       let inQuarantined = false;
 
-      const regex = new RegExp(`(?<![\\w.])${oldKey.replace(/\\./g, '\\.')}(?![\\w.])`, 'g');
+      const regex = new RegExp(`(?<![\\w.])${oldKey.replace(/\./g, '\\.')}(?![\\w.])`, 'g');
       
       for (const file of sourceFiles) {
         const content = fs.readFileSync(file, 'utf-8');
@@ -253,7 +252,6 @@ async function main() {
       if (sourceFilesCount > 0 || inQuarantined) {
         validReplacements.push({ oldKey, newKey });
       } else {
-        // 🆕 Ajout au rapport : rejeté par l'analyse
         let reason = "";
         if (testFilesCount > 0) {
           reason = `Trouvé uniquement dans ${testFilesCount} test(s) (Clé dynamique probable).`;
@@ -264,6 +262,7 @@ async function main() {
       }
     }
 
+    // --- PHASE 2 : APPLICATION ---
     if (validReplacements.length > 0) {
       translations.forEach(fileObj => {
         let fileModified = false;
@@ -280,7 +279,8 @@ async function main() {
       });
 
       const regexes = validReplacements.map(r => ({
-        oldRegex: new RegExp(`(['"\`])${r.oldKey.replace(/\./g, '\\.')}\\1`, 'g'),
+        // 🆕 Même regex pour le remplacement
+        oldRegex: new RegExp(`(?<![\\w.])${r.oldKey.replace(/\./g, '\\.')}(?![\\w.])`, 'g'),
         newKey: r.newKey
       }));
 
@@ -290,7 +290,8 @@ async function main() {
 
         regexes.forEach(({ oldRegex, newKey }) => {
           if (oldRegex.test(content)) {
-            content = content.replace(oldRegex, `$1${newKey}$1`);
+            // 🆕 On remplace directement (plus besoin de capturer les guillemets)
+            content = content.replace(oldRegex, newKey);
             fileModified = true;
           }
         });
@@ -328,7 +329,6 @@ async function main() {
     });
   }
 
-  // 🆕 GÉNÉRATION DU FICHIER DE RAPPORT EN FIN DE SCRIPT
   if (ignoredReport.length > 0) {
     const reportPath = './ignored_keys_report.md';
     let reportContent = '# Rapport des clés de traduction non modifiées\n\n';
@@ -347,8 +347,8 @@ async function main() {
   }
 
   console.log("\n🎉 Traitement terminé avec succès !");
-  console.log(`Total fichiers sources modifiés : ${totalCodeFilesUpdated}`);
-  console.log(`Total fichiers tests modifiés : ${totalTestFilesUpdated}`);
+  console.log(`Total occurrences modifiées (Sources) : ${totalCodeFilesUpdated}`);
+  console.log(`Total occurrences modifiées (Tests)   : ${totalTestFilesUpdated}`);
   rl.close();
 }
 
