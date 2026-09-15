@@ -229,7 +229,7 @@ async function main() {
       let testFilesCount = 0;
       let inQuarantined = false;
 
-      const regex = new RegExp(`(['"\`])${oldKey.replace(/\./g, '\\.')}\\1`, 'g');
+      const regex = new RegExp(`(?<![\\w.])${oldKey.replace(/\\./g, '\\.')}(?![\\w.])`, 'g');
       
       for (const file of sourceFiles) {
         const content = fs.readFileSync(file, 'utf-8');
