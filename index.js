@@ -23,12 +23,6 @@ function getAllFiles(dirPath, arrayOfFiles = []) {
         getAllFiles(fullPath, arrayOfFiles);
       }
     } else {
-      const isTestFile = config.testFilePatterns && config.testFilePatterns.some(pattern => file.includes(pattern));
-      
-      if (config.ignoreTestFiles && isTestFile) {
-        return; 
-      }
-
       if (config.fileExtensions.includes(path.extname(file))) {
         arrayOfFiles.push(fullPath);
       }
@@ -162,10 +156,19 @@ async function main() {
     groups[parentPath].push(k);
   });
 
-  const codeFiles = getAllFiles(config.projectRoot);
-  let totalCodeFilesUpdated = 0;
+  // 🆕 SÉPARATION DES FICHIERS (Sources vs Tests)
+  const allFiles = getAllFiles(config.projectRoot);
+  const sourceFiles = [];
+  const testFiles = [];
 
-  // 🆕 Initialisation du mode automatique depuis la config
+  allFiles.forEach(file => {
+    const isTestFile = config.testFilePatterns && config.testFilePatterns.some(pattern => file.includes(pattern));
+    if (isTestFile) testFiles.push(file);
+    else sourceFiles.push(file);
+  });
+
+  let totalCodeFilesUpdated = 0;
+  let totalTestFilesUpdated = 0;
   let isAutoMode = !!config.autoMode;
 
   for (const [parentPath, keys] of Object.entries(groups)) {
@@ -184,7 +187,6 @@ async function main() {
     let choice = '';
     let finalReplacements = groupReplacements;
 
-    // 🆕 GESTION DU MODE AUTOMATIQUE
     if (!isAutoMode) {
       const answer = await askQuestion("\nAction : [Entrée] Valider tout | [s] Ignorer | [m] Modifier | [a] Mode auto : ");
       choice = answer.trim().toLowerCase();
@@ -192,7 +194,7 @@ async function main() {
       if (choice === 'a') {
         isAutoMode = true;
         console.log("🤖 Mode automatique activé pour le reste des groupes !");
-        choice = ''; // Considère ça comme une validation classique pour ce groupe
+        choice = '';
       }
     } else {
       console.log("🤖 Validation automatique du groupe...");
@@ -211,23 +213,32 @@ async function main() {
       }
     }
 
-    console.log("⏳ Vérification des utilisations (Code & Quarantaine)...");
+    console.log("⏳ Vérification conditionnelle (Source vs Tests)...");
 
     const validReplacements = [];
     const statsTracker = {};
 
+    // --- PHASE 1 : ANALYSE ---
     for (const { oldKey, newKey } of finalReplacements) {
-      let codeFilesCount = 0;
+      let sourceFilesCount = 0;
+      let testFilesCount = 0;
       let inQuarantined = false;
 
       const regex = new RegExp(`(['"\`])${oldKey.replace(/\./g, '\\.')}\\1`, 'g');
-      for (const file of codeFiles) {
+      
+      // Cherche dans le vrai code
+      for (const file of sourceFiles) {
         const content = fs.readFileSync(file, 'utf-8');
-        if (regex.test(content)) {
-          codeFilesCount++;
-        }
+        if (regex.test(content)) sourceFilesCount++;
       }
 
+      // Cherche dans les tests
+      for (const file of testFiles) {
+        const content = fs.readFileSync(file, 'utf-8');
+        if (regex.test(content)) testFilesCount++;
+      }
+
+      // Cherche dans quarantinedKeys
       for (const fileObj of translations) {
         if (fileObj.content.quarantinedKeys && fileObj.content.quarantinedKeys[oldKey]) {
           inQuarantined = true;
@@ -235,17 +246,20 @@ async function main() {
         }
       }
 
-      statsTracker[oldKey] = { codeFilesCount, inQuarantined };
+      statsTracker[oldKey] = { sourceFilesCount, testFilesCount, inQuarantined };
 
-      if (codeFilesCount > 0 || inQuarantined) {
+      // ✨ LA NOUVELLE RÈGLE DE VALIDATION ✨
+      // Valide uniquement si trouvé dans la source ou en quarantaine
+      if (sourceFilesCount > 0 || inQuarantined) {
         validReplacements.push({ oldKey, newKey });
       }
     }
 
+    // --- PHASE 2 : APPLICATION (Sur les clés validées) ---
     if (validReplacements.length > 0) {
+      // 1. JSON
       translations.forEach(fileObj => {
         let fileModified = false;
-
         validReplacements.forEach(({ oldKey, newKey }) => {
           const res = updateJsonObject(fileObj.content, oldKey, newKey);
           const qRes = updateQuarantinedKeys(fileObj.content, oldKey, newKey);
@@ -258,12 +272,14 @@ async function main() {
         }
       });
 
+      // 2. Code ET Tests (puisqu'ils ont été validés, on modifie tout le monde)
       const regexes = validReplacements.map(r => ({
         oldRegex: new RegExp(`(['"\`])${r.oldKey.replace(/\./g, '\\.')}\\1`, 'g'),
         newKey: r.newKey
       }));
 
-      codeFiles.forEach(file => {
+      // On applique la modif sur tous les fichiers (sourceFiles + testFiles)
+      [...sourceFiles, ...testFiles].forEach(file => {
         let content = fs.readFileSync(file, 'utf-8');
         let fileModified = false;
 
@@ -280,26 +296,37 @@ async function main() {
       });
     }
 
+    // --- BILAN VISUEL ---
     console.log(`\n📊 Bilan pour le groupe :`);
     finalReplacements.forEach(({ oldKey }) => {
       const s = statsTracker[oldKey];
 
-      if (s.codeFilesCount > 0 || s.inQuarantined) {
+      if (s.sourceFilesCount > 0 || s.inQuarantined) {
         let messages = [];
-        if (s.codeFilesCount > 0) {
-          messages.push(`Code mis à jour (${s.codeFilesCount} fichier(s))`);
-          totalCodeFilesUpdated += s.codeFilesCount;
+        if (s.sourceFilesCount > 0) {
+          messages.push(`Source (${s.sourceFilesCount} f.)`);
+          totalCodeFilesUpdated += s.sourceFilesCount;
         }
-        if (s.inQuarantined) messages.push(`Mise à jour dans quarantinedKeys`);
+        if (s.testFilesCount > 0) {
+          messages.push(`Tests (${s.testFilesCount} f.)`);
+          totalTestFilesUpdated += s.testFilesCount;
+        }
+        if (s.inQuarantined) messages.push(`Quarantaine`);
         
-        console.log(`  ✔️  \x1b[32m${oldKey}\x1b[0m : ${messages.join(' | ')}`);
+        console.log(`  ✔️  \x1b[32m${oldKey}\x1b[0m : Mis à jour [${messages.join(' | ')}]`);
       } else {
-        console.log(`  🚫  \x1b[31m${oldKey}\x1b[0m : Ignoré (introuvable dans le code source) - JSON non modifié.`);
+        if (s.testFilesCount > 0) {
+          console.log(`  🚫  \x1b[33m${oldKey}\x1b[0m : Ignoré (Trouvé UNIQUEMENT dans ${s.testFilesCount} test(s))`);
+        } else {
+          console.log(`  🚫  \x1b[31m${oldKey}\x1b[0m : Ignoré (Introuvable partout)`);
+        }
       }
     });
   }
 
   console.log("\n🎉 Traitement terminé avec succès !");
+  console.log(`Total fichiers sources modifiés : ${totalCodeFilesUpdated}`);
+  console.log(`Total fichiers tests modifiés : ${totalTestFilesUpdated}`);
   rl.close();
 }
 
