@@ -8,5 +8,7 @@
     "carto"
   ],
   "maxDepthAllowed": 2,
-  "fileExtensions": [".js", ".jsx", ".ts", ".tsx", ".vue"]
+  "fileExtensions": [".js", ".jsx", ".ts", ".tsx", ".vue"],
+  "ignoreTestFiles": true,
+  "testFilePatterns": [".unit.", ".integration.", ".intergration."]
 }

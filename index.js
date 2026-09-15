@@ -19,10 +19,20 @@ function getAllFiles(dirPath, arrayOfFiles = []) {
   files.forEach(file => {
     const fullPath = path.join(dirPath, file);
     if (fs.statSync(fullPath).isDirectory()) {
+      // Ignore les dossiers cachés et node_modules
       if (!file.startsWith('.') && file !== 'node_modules') {
         getAllFiles(fullPath, arrayOfFiles);
       }
     } else {
+      // 🆕 Vérification si c'est un fichier de test
+      const isTestFile = config.testFilePatterns && config.testFilePatterns.some(pattern => file.includes(pattern));
+      
+      // Si l'option est activée et que c'est un fichier de test, on l'ignore
+      if (config.ignoreTestFiles && isTestFile) {
+        return; // Passe au fichier suivant
+      }
+
+      // Si l'extension est valide, on garde le fichier
       if (config.fileExtensions.includes(path.extname(file))) {
         arrayOfFiles.push(fullPath);
       }
@@ -113,7 +123,7 @@ function updateQuarantinedKeys(jsonObj, oldKey, newKey) {
   return false;
 }
 
-// 🆕 NOUVELLE FONCTION : Trie récursivement toutes les clés d'un objet par ordre alphabétique
+// Trie récursivement toutes les clés d'un objet par ordre alphabétique
 function sortObjectKeys(obj) {
   if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) {
     return obj;
@@ -136,6 +146,11 @@ async function main() {
     if (!fs.existsSync(filePath)) return null;
     return { path: filePath, content: JSON.parse(fs.readFileSync(filePath, 'utf-8')) };
   }).filter(t => t !== null);
+
+  if (translations.length === 0) {
+    console.error("❌ Aucun fichier de traduction trouvé.");
+    process.exit(1);
+  }
 
   const primaryJson = translations[0].content;
   const allKeys = extractKeys(primaryJson);
@@ -232,7 +247,7 @@ async function main() {
         });
 
         if (fileModified) {
-          // 🆕 On trie tout l'objet de traduction avant de le sauvegarder
+          // On trie tout l'objet de traduction avant de le sauvegarder
           fileObj.content = sortObjectKeys(fileObj.content);
           fs.writeFileSync(fileObj.path, JSON.stringify(fileObj.content, null, 2), 'utf-8');
         }
@@ -276,7 +291,7 @@ async function main() {
         
         console.log(`  ✔️  \x1b[32m${oldKey}\x1b[0m : ${messages.join(' | ')}`);
       } else {
-        console.log(`  🚫  \x1b[31m${oldKey}\x1b[0m : Ignoré (introuvable) - JSON non modifié.`);
+        console.log(`  🚫  \x1b[31m${oldKey}\x1b[0m : Ignoré (introuvable dans le code source) - JSON non modifié.`);
       }
     });
   }
