@@ -1,0 +1,12 @@
+{
+  "projectRoot": "../ETERNITE_N1/client",
+  "translationFiles": [
+    "../ETERNITE_N1/client/i18n/locales/fr.json",
+    "../ETERNITE_N1/client/i18n/locales/en.json"
+  ],
+  "ignoredParentKeys": [
+    "carto"
+  ],
+  "maxDepthAllowed": 2,
+  "fileExtensions": [".js", ".jsx", ".ts", ".tsx", ".vue"]
+}
